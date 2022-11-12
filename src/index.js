@@ -94,7 +94,16 @@ app.get('/messages', (req, res) => {
 });
 
 app.post('/status', (req, res) => {
-    
+    const name = req.headers.User;
+
+    participants.findOne({name}).then(
+        () => {
+            participants.updateOne({name}, {$set: {lastStatus: Date.now()}});
+            res.sendStatus(200);
+        }
+    ).catch(
+        () => res.sendStatus(404)
+    )
 });
 
 app.listen(5000, () => console.log('Running on port: https://localhost:5000'));
