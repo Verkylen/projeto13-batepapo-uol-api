@@ -22,47 +22,69 @@ mongoClient.connect().then(() => {
 });
 
 app.post('/participants', (req, res) => {
-    
-    // function postBodyError() {
-    //     res.sendStatus(422);
-    //     return;
-    // }
+    const bodySchema = joi.object({name: joi.string().required()});
 
-    // if (!req.hasOwnProperty('body')) {
-    //     postBodyError();
-    // } else if(!req.body.hasOwnProperty('name')) {
-    //     postBodyError();
-    // } else if(req.body.name === '') {
-    //     postBodyError();
-    // }
+    const {body} = req;
 
-    const {name} = req.body;
+    const validation = bodySchema.validate(body, {abortEarly: true});
 
-    participants.insertOne({name, lastStatus: Date.now()});
-
-    const hour = dayjs().hour().toString().padStart(2, 0);
-    const minute = dayjs().minute().toString().padStart(2, 0);
-    const second = dayjs().second().toString().padStart(2, 0);
-
-    const systemMessage = {
-        from: name,
-        to: 'Todos',
-        text: 'entra na sala...',
-        type: 'status',
-        time: `${hour}:${minute}:${second}`
+    if (validation.hasOwnProperty('error')) {
+        res.sendStatus(422);
+        return;
     }
 
-    messages.insertOne(systemMessage);
+    const {name} = body;
 
-    res.sendStatus(201);
+    function register() {
+        participants.insertOne({name, lastStatus: Date.now()});
+    
+        const hour = dayjs().hour().toString().padStart(2, 0);
+        const minute = dayjs().minute().toString().padStart(2, 0);
+        const second = dayjs().second().toString().padStart(2, 0);
+    
+        const systemMessage = {
+            from: name,
+            to: 'Todos',
+            text: 'entra na sala...',
+            type: 'status',
+            time: `${hour}:${minute}:${second}`
+        }
+    
+        messages.insertOne(systemMessage);
+    
+        res.sendStatus(201);
+    }
+
+    participants
+        .findOne({name})
+        .then(() => res.sendStatus(409))
+        .catch(register);
 });
 
-app.get('/participants', (req, res) => {
-    participants.find().toArray().then(participantsList => res.send(participantsList));
+app.get('/participants', ({}, res) => {
+    participants
+        .find()
+        .toArray()
+        .then(participantsList => res.send(participantsList));
 });
 
 app.post('/messages', (req, res) => {
-    const {to, text, type} = req.body;
+    const messageSchema = joi.object({
+        to: joi.string().required(),
+        text: joi.string().required(),
+        type: joi.string().pattern(new RegExp('^message$|^private_message$'))
+    });
+
+    const {body} = req;
+
+    const validation = messageSchema.validate(body, {abortEarly: true});
+
+    if (validation.hasOwnProperty('error')) {
+        res.sendStatus(422);
+        return;
+    }
+
+    const {to, text, type} = body;
     const from = req.headers.User;
 
     const hour = dayjs().hour().toString().padStart(2, 0);
@@ -75,35 +97,58 @@ app.post('/messages', (req, res) => {
 });
 
 app.get('/messages', (req, res) => {
-    let fullMessagesList = [];
-    messages.find().toArray().then(response => fullMessagesList = response);
+    messages.find().toArray().then(fullMessagesList => {
+        const {User} = req.headers;
 
-    const {User} = req.headers;
-
-    const dedicatedMessagesList = fullMessagesList.filter(
-        ({from, to}) => from === User || [User, 'Todos'].includes(to)
-    );
-
-    res.send(
-        req.query.hasOwnProperty('limit') ? (
-            dedicatedMessagesList.slice(-req.query.limit)
-        ) : (
-            dedicatedMessagesList
-        )
-    );
+        const dedicatedMessagesList = fullMessagesList.filter(
+            ({from, to}) => from === User || [User, 'Todos'].includes(to)
+        );
+    
+        res.send(
+            req.query.hasOwnProperty('limit') ? (
+                dedicatedMessagesList.slice(-req.query.limit)
+            ) : (
+                dedicatedMessagesList
+            )
+        );
+    });
 });
 
 app.post('/status', (req, res) => {
     const name = req.headers.User;
 
-    participants.findOne({name}).then(
-        () => {
-            participants.updateOne({name}, {$set: {lastStatus: Date.now()}});
-            res.sendStatus(200);
-        }
-    ).catch(
-        () => res.sendStatus(404)
-    )
+    participants.findOne({name}).then(() => {
+        participants.updateOne({name}, {$set: {lastStatus: Date.now()}});
+        res.sendStatus(200);
+    }).catch(() => res.sendStatus(404));
 });
+
+function removalIdle(list) {
+    for (const user of list) {
+        if (Date.now() - user.lastStatus > 10000) {
+            const hour = dayjs().hour().toString().padStart(2, 0);
+            const minute = dayjs().minute().toString().padStart(2, 0);
+            const second = dayjs().second().toString().padStart(2, 0);
+
+            participants.deleteOne(user);
+            messages.insertOne({
+                from: user.name,
+                to: 'Todos',
+                text: 'sai da sala...',
+                type: 'status',
+                time: `${hour}:${minute}:${second}`
+            });
+        }
+    }
+}
+
+function listParticipants() {
+    participants
+        .find()
+        .toArray()
+        .then(removalIdle);
+}
+
+setInterval(listParticipants, 15000);
 
 app.listen(5000, () => console.log('Running on port: https://localhost:5000'));
