@@ -1,5 +1,5 @@
 import express, { json } from 'express';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import dayjs from 'dayjs';
@@ -51,14 +51,13 @@ app.post('/participants', (req, res) => {
         }
     
         messages.insertOne(systemMessage);
-    
+
         res.sendStatus(201);
     }
 
     participants
         .findOne({name})
-        .then(() => res.sendStatus(409))
-        .catch(register);
+        .then(response => response === null ? register() : res.sendStatus(409));
 });
 
 app.get('/participants', ({}, res) => {
@@ -68,13 +67,13 @@ app.get('/participants', ({}, res) => {
         .then(participantsList => res.send(participantsList));
 });
 
-app.post('/messages', (req, res) => {
-    const messageSchema = joi.object({
-        to: joi.string().required(),
-        text: joi.string().required(),
-        type: joi.string().pattern(new RegExp('^message$|^private_message$'))
-    });
+const messageSchema = joi.object({
+    to: joi.string().required(),
+    text: joi.string().required(),
+    type: joi.string().pattern(new RegExp('^message$|^private_message$'))
+});
 
+app.post('/messages', (req, res) => {
     const {body} = req;
 
     const validation = messageSchema.validate(body, {abortEarly: true});
@@ -83,25 +82,31 @@ app.post('/messages', (req, res) => {
         res.sendStatus(422);
         return;
     }
+    const from = req.headers.user;
 
-    const {to, text, type} = body;
-    const from = req.headers.User;
+    function saveMessage() {
+        const {to, text, type} = body;
 
-    const hour = dayjs().hour().toString().padStart(2, 0);
-    const minute = dayjs().minute().toString().padStart(2, 0);
-    const second = dayjs().second().toString().padStart(2, 0);
+        const hour = dayjs().hour().toString().padStart(2, 0);
+        const minute = dayjs().minute().toString().padStart(2, 0);
+        const second = dayjs().second().toString().padStart(2, 0);
+    
+        messages
+            .insertOne({from, to, text, type, time: `${hour}:${minute}:${second}`})
+            .then(() => res.sendStatus(201));
+    }
 
-    messages
-        .insertOne({from, to, text, type, time: `${hour}:${minute}:${second}`})
-        .then(() => res.sendStatus(201));
+    participants
+        .findOne({name: from})
+        .then(response => response === null ? res.sendStatus(422) : saveMessage());
 });
 
 app.get('/messages', (req, res) => {
     messages.find().toArray().then(fullMessagesList => {
-        const {User} = req.headers;
+        const {user} = req.headers;
 
         const dedicatedMessagesList = fullMessagesList.filter(
-            ({from, to}) => from === User || [User, 'Todos'].includes(to)
+            ({from, to}) => from === user || [user, 'Todos'].includes(to)
         );
     
         res.send(
@@ -115,12 +120,16 @@ app.get('/messages', (req, res) => {
 });
 
 app.post('/status', (req, res) => {
-    const name = req.headers.User;
+    const name = req.headers.user;
 
-    participants.findOne({name}).then(() => {
-        participants.updateOne({name}, {$set: {lastStatus: Date.now()}});
-        res.sendStatus(200);
-    }).catch(() => res.sendStatus(404));
+    participants.findOne({name}).then(response => {
+        if (response === null) {
+            res.sendStatus(404);
+        } else {
+            participants.updateOne({name}, {$set: {lastStatus: Date.now()}});
+            res.sendStatus(200);
+        }
+    });
 });
 
 function removalIdle(list) {
@@ -149,6 +158,85 @@ function listParticipants() {
         .then(removalIdle);
 }
 
+app.delete('/messages/:id', (req, res) => {
+    const {id} = req.params;
+
+    if (id.length !== 24) {
+        res.sendStatus(404);
+        return;
+    }
+
+    for (const hexCharacter of id) {
+        if (hexCharacter < '0' || hexCharacter > 'f') {
+            res.sendStatus(404);
+            return;
+        }
+    }
+
+    messages.findOne({_id: new ObjectId(id)}).then(response => {
+        if (response === null) {
+            res.sendStatus(404);
+            return;
+        }
+        
+        if (response.from !== req.headers.user) {
+            res.sendStatus(401);
+            return;
+        }
+
+        messages.deleteOne({_id: new ObjectId(id)}).then(() => res.sendStatus(200));
+    })
+});
+
+app.put('/messages/:id', (req, res) => {
+    const {body} = req;
+
+    const validation = messageSchema.validate(body, {abortEarly: true});
+
+    if (validation.hasOwnProperty('error')) {
+        res.sendStatus(422);
+        return;
+    }
+
+    const {id} = req.params;
+
+    if (id.length !== 24) {
+        res.sendStatus(404);
+        return;
+    }
+
+    for (const hexCharacter of id) {
+        if (hexCharacter < '0' || hexCharacter > 'f') {
+            res.sendStatus(404);
+            return;
+        }
+    }
+
+    const name = req.headers.user;
+
+    function checkId() {
+        messages.findOne({_id: new ObjectId(id)}).then(response => {
+            if (response === null) {
+                res.sendStatus(404);
+                return;
+            }
+
+            if (response.from !== name) {
+                res.sendStatus(401);
+                return;
+            }
+
+            messages
+                .updateOne({_id: new ObjectId(id)}, {$set: body})
+                .then(() => res.sendStatus(200));
+        });
+    }
+
+    participants.findOne({name}).then(response => {
+        response === null ? res.sendStatus(422) : checkId()
+    });
+});
+
 setInterval(listParticipants, 15000);
 
-app.listen(5000, () => console.log('Running on port: https://localhost:5000'));
+app.listen(5000, () => console.log('Running on port: http://localhost:5000'));
