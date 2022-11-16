@@ -70,7 +70,7 @@ app.get('/participants', ({}, res) => {
 const messageSchema = joi.object({
     to: joi.string().required(),
     text: joi.string().required(),
-    type: joi.string().pattern(new RegExp('^message$|^private_message$'))
+    type: joi.string().pattern(new RegExp('^message$|^private_message$')).required()
 });
 
 app.post('/messages', (req, res) => {
